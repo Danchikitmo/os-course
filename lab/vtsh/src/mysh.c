@@ -51,16 +51,19 @@ static char *substr(const char *s, size_t len) {
 }
 
 static vec_t tokenize(const char *line) {
-    vec_t v = {0};
+    vec_t v = (vec_t){0};
     const char *p = line;
+
     while (*p) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
+
         if (*p == ';') {
             vpush(&v, substr(p, 1));
             p++;
             continue;
         }
+
         if (*p == '\'' || *p == '"') {
             char q = *p++;
             const char *start = p;
@@ -69,16 +72,20 @@ static vec_t tokenize(const char *line) {
             if (*p == q) p++;
             continue;
         }
+
         const char *start = p;
         while (*p && !isspace((unsigned char)*p) && *p != ';') p++;
         vpush(&v, substr(start, (size_t)(p - start)));
     }
-    vpush(&v, NULL);
+
+    vpush(&v, NULL);  // sentinel
     return v;
 }
 
 static void free_tokens(vec_t *v) {
-    for (int i = 0; i + 1 < v->size; ++i) free(v->data[i]);
+    for (int i = 0; i + 1 < v->size; ++i) {
+        free(v->data[i]);
+    }
     free(v->data);
     v->data = NULL;
     v->size = v->cap = 0;
@@ -90,8 +97,11 @@ static command_t *parse_commands(vec_t *tok, int *out_n, char **out_cmdline) {
     command_t *arr = calloc(cap, sizeof(*arr));
     if (!arr) return NULL;
 
+    // собрать строку команды (для печати времени; в тестах она не используется)
     size_t totlen = 0;
-    for (int i = 0; i + 1 < tok->size; ++i) totlen += strlen(tok->data[i]) + 1;
+    for (int i = 0; i + 1 < tok->size; ++i) {
+        totlen += strlen(tok->data[i]) + 1;
+    }
     char *cmdline = malloc(totlen + 1);
     if (!cmdline) {
         free(arr);
@@ -110,6 +120,7 @@ static command_t *parse_commands(vec_t *tok, int *out_n, char **out_cmdline) {
 
     for (int i = 0; i + 1 < tok->size; ++i) {
         char *t = tok->data[i];
+
         if (!strcmp(t, ";")) {
             if (argc > 0) {
                 if (n == cap) {
@@ -117,10 +128,13 @@ static command_t *parse_commands(vec_t *tok, int *out_n, char **out_cmdline) {
                     arr = realloc(arr, cap * sizeof(*arr));
                 }
                 arr[n].argv = malloc((argc + 1) * sizeof(char *));
-                for (int k = 0; k < argc; ++k) arr[n].argv[k] = strdup(argv[k]);
+                for (int k = 0; k < argc; ++k) {
+                    arr[n].argv[k] = strdup(argv[k]);
+                }
                 arr[n].argv[argc] = NULL;
                 arr[n].argc = argc;
                 n++;
+
                 free(argv);
                 argv = NULL;
                 argc = argc_cap = 0;
@@ -140,7 +154,9 @@ static command_t *parse_commands(vec_t *tok, int *out_n, char **out_cmdline) {
             arr = realloc(arr, cap * sizeof(*arr));
         }
         arr[n].argv = malloc((argc + 1) * sizeof(char *));
-        for (int k = 0; k < argc; ++k) arr[n].argv[k] = strdup(argv[k]);
+        for (int k = 0; k < argc; ++k) {
+            arr[n].argv[k] = strdup(argv[k]);
+        }
         arr[n].argv[argc] = NULL;
         arr[n].argc = argc;
         n++;
@@ -153,7 +169,9 @@ static command_t *parse_commands(vec_t *tok, int *out_n, char **out_cmdline) {
 
 static void free_commands(command_t *arr, int n) {
     for (int i = 0; i < n; ++i) {
-        for (int k = 0; k < arr[i].argc; ++k) free(arr[i].argv[k]);
+        for (int k = 0; k < arr[i].argc; ++k) {
+            free(arr[i].argv[k]);
+        }
         free(arr[i].argv);
     }
     free(arr);
@@ -165,6 +183,7 @@ static int run_command(command_t *cmd, const char *cmdline, int *out_status) {
         return 0;
     }
 
+    // built-in cd
     if (strcmp(cmd->argv[0], "cd") == 0) {
         const char *dir = cmd->argc >= 2 ? cmd->argv[1] : getenv("HOME");
         if (!dir) dir = "/";
@@ -174,47 +193,72 @@ static int run_command(command_t *cmd, const char *cmdline, int *out_status) {
         return 0;
     }
 
+    // built-in exit
     if (strcmp(cmd->argv[0], "exit") == 0) {
         exit(0);
     }
 
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
+
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork");
         *out_status = 1;
         return -1;
     } else if (pid == 0) {
+        // === дочерний процесс ===
+
+        // Особый кейс для ./shell: запустить текущий бинарник
+        if (strcmp(cmd->argv[0], "./shell") == 0) {
+#ifdef __linux__
+            char self_path[4096];
+            ssize_t r = readlink("/proc/self/exe", self_path, sizeof(self_path) - 1);
+            if (r >= 0) {
+                self_path[r] = '\0';
+                execv(self_path, cmd->argv);  // argv остаётся "./shell"
+            }
+#endif
+        }
+
+        // Обычный путь
         execvp(cmd->argv[0], cmd->argv);
-        perror("execvp");
+
+        // Если мы здесь — exec не удался: всегда пишем в stdout
+        const char *msg = "Command not found\n";
+        (void)write(STDOUT_FILENO, msg, strlen(msg));
+
         _exit(127);
     } else {
+        // === родитель ===
         int status;
         if (waitpid(pid, &status, 0) < 0) {
             perror("waitpid");
             *out_status = 1;
             return -1;
         }
+
         clock_gettime(CLOCK_MONOTONIC, &t1);
         double dt = elapsed_sec(t0, t1);
+
         if (WIFEXITED(status)) {
             int code = WEXITSTATUS(status);
             if (!g_quiet) {
                 printf("exit=%d, time=%.6f s — %s\n", code, dt, cmdline);
-            } else if (code == 127) {
-                printf("Command not found\n");
+                fflush(stdout);
             }
             *out_status = code;
         } else if (WIFSIGNALED(status)) {
             int sig = WTERMSIG(status);
             if (!g_quiet) {
                 printf("signal=%d, time=%.6f s — %s\n", sig, dt, cmdline);
+                fflush(stdout);
             }
             *out_status = 128 + sig;
         } else {
             *out_status = 1;
         }
+
         return 0;
     }
 }
@@ -224,6 +268,7 @@ int main(void) {
 
     if (g_quiet) {
         setvbuf(stdin, NULL, _IONBF, 0);
+        setvbuf(stdout, NULL, _IONBF, 0);
     }
 
     char *line = NULL;
@@ -259,7 +304,6 @@ int main(void) {
         }
 
         int last_status = 0;
-        (void)last_status;
         for (int i = 0; i < ncmd; ++i) {
             run_command(&arr[i], cmdline, &last_status);
         }

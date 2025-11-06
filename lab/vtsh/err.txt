@@ -1,0 +1,2 @@
+execvp: Permission denied
+Command not found
