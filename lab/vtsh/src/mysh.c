@@ -97,7 +97,6 @@ static command_t *parse_commands(vec_t *tok, int *out_n, char **out_cmdline) {
     command_t *arr = calloc(cap, sizeof(*arr));
     if (!arr) return NULL;
 
-    // собрать строку команды (для печати времени; в тестах она не используется)
     size_t totlen = 0;
     for (int i = 0; i + 1 < tok->size; ++i) {
         totlen += strlen(tok->data[i]) + 1;
